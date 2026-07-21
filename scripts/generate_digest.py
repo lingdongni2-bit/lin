@@ -20,9 +20,15 @@ CATEGORIES = {
     "经济": "中国 经济",
     "科技": "中国 科技 人工智能",
     "社会": "中国 社会",
-    "文化": "中国 文化",
     "外交": "中国 外交",
 }
+FOREIGN_SOURCE_MARKERS = (
+    "Reuters", "路透", "BBC", "Associated Press", "美联社", "Financial Times", "金融时报",
+    "Bloomberg", "彭博", "Nikkei", "日经", "The New York Times", "纽约时报", "Wall Street Journal",
+    "华尔街日报", "CNN", "The Guardian", "卫报", "Al Jazeera", "半岛", "France 24", "DW",
+    "Deutsche Welle", "德国之声", "VOA", "Radio Free Asia", "自由亚洲", "The Diplomat",
+    "South China Morning Post", "南华早报", "Taiwan News", "中央社", "The Straits Times",
+)
 
 def fetch(query: str) -> list[dict]:
     url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
@@ -41,7 +47,8 @@ def fetch(query: str) -> list[dict]:
             published = parsedate_to_datetime(raw_date).astimezone(NOW.tzinfo)
         except (TypeError, ValueError):
             continue
-        if title and link and START <= published <= NOW + dt.timedelta(minutes=5):
+        is_foreign_source = any(marker.lower() in source.lower() for marker in FOREIGN_SOURCE_MARKERS)
+        if title and link and is_foreign_source and START <= published <= NOW + dt.timedelta(minutes=5):
             found.append({"title": title, "link": link, "source": source, "published": published})
     return found
 
