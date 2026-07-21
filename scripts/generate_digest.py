@@ -9,6 +9,7 @@ import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
@@ -55,6 +56,19 @@ def fetch(query: str) -> list[dict]:
 def clean_title(title: str) -> str:
     return re.sub(r"\s+-\s+[^-]+$", "", title).strip()
 
+def cover_image(url: str) -> str:
+    """从原报道页提取 Open Graph 封面图；失败时不显示图片。"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ChinaNewsDigest/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            page = response.read(500_000).decode("utf-8", "ignore")
+        match = re.search(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)', page, re.I)
+        if not match:
+            match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']', page, re.I)
+        return match.group(1).strip() if match and match.group(1).startswith("http") else ""
+    except Exception:
+        return ""
+
 def render(groups: dict[str, list[dict]]) -> str:
     count = sum(len(x) for x in groups.values())
     parts = []
@@ -66,14 +80,16 @@ def render(groups: dict[str, list[dict]]) -> str:
             title = html.escape(clean_title(item["title"]))
             source = html.escape(item["source"])
             time = item["published"].strftime("%Y-%m-%d %H:%M")
-            rows.append(f'''<article><h3>{n}. <a href="{html.escape(item["link"], quote=True)}">{title}</a></h3>
+            image = item.get("image", "")
+            picture = f'<img src="{html.escape(image, quote=True)}" alt="" loading="lazy">' if image else ""
+            rows.append(f'''<article>{picture}<div><h3>{n}. <a href="{html.escape(item["link"], quote=True)}">{title}</a></h3>
 <p>该报道在公开媒体索引中于统计窗口内出现，可作为“{category}”板块的近期讨论线索；请以原始报道和后续权威信息为准。</p>
-<p class="meta">来源：{source}　发布时间（北京时间）：{time}</p></article>''')
+<p class="meta">来源：{source}　发布时间（北京时间）：{time}</p></div></article>''')
         parts.append(f"<section><h2>{category}（{len(items)} 条）</h2>{''.join(rows)}</section>")
     updated = NOW.strftime("%Y-%m-%d %H:%M")
     start = START.strftime("%Y-%m-%d %H:%M")
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>中国讨论度新闻梗概</title><style>body{{max-width:900px;margin:32px auto;padding:0 18px;font-family:"Microsoft YaHei",sans-serif;color:#172033;line-height:1.65}}h1{{margin-bottom:4px}}h2{{margin-top:35px;border-left:5px solid #2563eb;padding-left:10px}}article{{padding:12px 16px;margin:10px 0;background:#f8fafc;border-radius:8px}}h3{{margin:0;font-size:17px}}p{{margin:7px 0}}a{{color:#1d4ed8}}.meta,.note{{color:#64748b;font-size:14px}}</style>
+<title>中国讨论度新闻梗概</title><style>body{{max-width:900px;margin:32px auto;padding:0 18px;font-family:"Microsoft YaHei",sans-serif;color:#172033;line-height:1.65}}h1{{margin-bottom:4px}}h2{{margin-top:35px;border-left:5px solid #2563eb;padding-left:10px}}article{{display:flex;gap:14px;padding:12px 16px;margin:10px 0;background:#f8fafc;border-radius:8px}}article img{{width:150px;height:100px;object-fit:cover;border-radius:6px}}article div{{min-width:0}}h3{{margin:0;font-size:17px}}p{{margin:7px 0}}a{{color:#1d4ed8}}.meta,.note{{color:#64748b;font-size:14px}}@media(max-width:560px){{article img{{width:110px;height:82px}}}}</style>
 <body><h1>中国讨论度新闻梗概</h1><p class="note">统计范围：北京时间 {start} 至 {updated}｜生成时间：{updated}</p>
 <p class="note">本期收录 {count} 条。按公开媒体的报道时效、跨媒体出现度与议题影响做编辑筛选，不代表全网真实热度；严格限于过去 24 小时，不足不补。</p>
 {''.join(parts) if parts else '<p>本期未找到可核验的近 24 小时条目。</p>'}</body></html>'''
@@ -90,6 +106,11 @@ def main() -> None:
             groups[category].append(item)
         groups[category].sort(key=lambda x: x["published"], reverse=True)
         groups[category] = groups[category][:10]
+    items = [item for section in groups.values() for item in section]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        images = list(pool.map(lambda item: cover_image(item["link"]), items))
+    for item, image in zip(items, images):
+        item["image"] = image
     OUT.mkdir(exist_ok=True)
     report = render(groups)
     stamp = NOW.strftime("%Y-%m-%d_%H%M")
