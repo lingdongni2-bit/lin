@@ -31,7 +31,7 @@ FOREIGN_SOURCE_MARKERS = (
     "South China Morning Post", "南华早报", "Taiwan News", "中央社", "The Straits Times",
 )
 
-def fetch(query: str) -> list[dict]:
+def fetch_rss(query: str) -> list[dict]:
     url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
         "q": query, "hl": "zh-CN", "gl": "CN", "ceid": "CN:zh-Hans"
     })
@@ -48,10 +48,45 @@ def fetch(query: str) -> list[dict]:
             published = parsedate_to_datetime(raw_date).astimezone(NOW.tzinfo)
         except (TypeError, ValueError):
             continue
-        is_foreign_source = any(marker.lower() in source.lower() for marker in FOREIGN_SOURCE_MARKERS)
-        if title and link and is_foreign_source and START <= published <= NOW + dt.timedelta(minutes=5):
-            found.append({"title": title, "link": link, "source": source, "published": published})
+        if title and link and START <= published <= NOW + dt.timedelta(minutes=5):
+            found.append({"title": title, "link": link, "source": source, "published": published, "source_type": "RSS"})
     return found
+
+
+def fetch_web(query: str) -> list[dict]:
+    """Fetch public article records from a web-news index, independently of RSS."""
+    url = "https://api.gdeltproject.org/api/v2/doc/doc?" + urllib.parse.urlencode({
+        "query": query,
+        "mode": "artlist",
+        "format": "json",
+        "maxrecords": 100,
+        "startdatetime": START.astimezone(dt.timezone.utc).strftime("%Y%m%d%H%M%S"),
+        "enddatetime": NOW.astimezone(dt.timezone.utc).strftime("%Y%m%d%H%M%S"),
+    })
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ChinaNewsDigest/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            articles = json.load(response).get("articles", [])
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+    found = []
+    for article in articles:
+        title = (article.get("title") or "").strip()
+        link = (article.get("url") or "").strip()
+        source = (article.get("domain") or article.get("sourceCountry") or "公开媒体").strip()
+        raw_date = (article.get("seendate") or "").strip()
+        try:
+            published = dt.datetime.strptime(raw_date, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc).astimezone(NOW.tzinfo)
+        except ValueError:
+            continue
+        if title and link and START <= published <= NOW + dt.timedelta(minutes=5):
+            found.append({"title": title, "link": link, "source": source, "published": published, "source_type": "网页新闻索引"})
+    return found
+
+
+def fetch(query: str) -> list[dict]:
+    return fetch_rss(query) + fetch_web(f'China {query}')
 
 def clean_title(title: str) -> str:
     return re.sub(r"\s+-\s+[^-]+$", "", title).strip()
@@ -97,8 +132,10 @@ def render(groups: dict[str, list[dict]]) -> str:
 def main() -> None:
     seen: set[str] = set()
     groups: dict[str, list[dict]] = {name: [] for name in CATEGORIES}
-    for category, query in CATEGORIES.items():
-        for item in fetch(query):
+    with ThreadPoolExecutor(max_workers=len(CATEGORIES)) as pool:
+        fetched_sections = list(pool.map(lambda pair: (pair[0], fetch(pair[1])), CATEGORIES.items()))
+    for category, section_items in fetched_sections:
+        for item in section_items:
             key = re.sub(r"\W+", "", clean_title(item["title"]).lower())
             if key in seen:
                 continue
