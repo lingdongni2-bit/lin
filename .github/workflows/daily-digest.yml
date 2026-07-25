@@ -1,6 +1,11 @@
 name: 工作日中国新闻日报
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/generate_digest.py"
+      - ".github/workflows/daily-digest.yml"
   workflow_dispatch:
   schedule:
     - cron: "0 1 * * 1-5" # 北京时间工作日 09:00

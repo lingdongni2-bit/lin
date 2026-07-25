@@ -86,7 +86,10 @@ def fetch_web(query: str) -> list[dict]:
 
 
 def fetch(query: str) -> list[dict]:
-    return fetch_rss(query) + fetch_web(f'China {query}')
+    # The weekday digest is intentionally sourced from public-media RSS only.
+    # Keep the existing filtering, de-duplication and category presentation
+    # downstream, but do not mix in web-index records for this report.
+    return fetch_rss(query)
 
 def clean_title(title: str) -> str:
     return re.sub(r"\s+-\s+[^-]+$", "", title).strip()
